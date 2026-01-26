@@ -131,24 +131,31 @@ if (buildExists) {
 // No connection needed - Firestore is serverless
 console.log('✓ Using Firestore database');
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  // Auto-open browser in development
-  if (process.env.NODE_ENV !== 'production' && !process.env.NO_OPEN) {
-    const url = `http://localhost:${PORT}`;
-    const command = process.platform === 'win32' 
-      ? `start ${url}` 
-      : process.platform === 'darwin' 
-      ? `open ${url}` 
-      : `xdg-open ${url}`;
-    
-    setTimeout(() => {
-      exec(command, (error) => {
-        if (error) {
-          console.log(`\nServer ready! Open ${url} in your browser`);
-        }
-      });
-    }, 1000);
-  }
-});
+// Export app for Vercel serverless functions
+export default app;
+
+// Only start the server if not running as a serverless function
+// In Vercel, we don't call app.listen() - the serverless function handles it
+if (!process.env.VERCEL) {
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    // Auto-open browser in development
+    if (process.env.NODE_ENV !== 'production' && !process.env.NO_OPEN) {
+      const url = `http://localhost:${PORT}`;
+      const command = process.platform === 'win32' 
+        ? `start ${url}` 
+        : process.platform === 'darwin' 
+        ? `open ${url}` 
+        : `xdg-open ${url}`;
+      
+      setTimeout(() => {
+        exec(command, (error) => {
+          if (error) {
+            console.log(`\nServer ready! Open ${url} in your browser`);
+          }
+        });
+      }, 1000);
+    }
+  });
+}
