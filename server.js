@@ -62,23 +62,30 @@ app.use((req, res, next) => {
 app.use('/api/', limiter);
 app.use('/api/auth/', authLimiter);
 
-// CORS configuration for sessions
-if (process.env.NODE_ENV !== 'production') {
-  app.use(cors({
-    origin: ['http://localhost:3000', 'http://localhost:5000', 'http://localhost:5001'],
-    credentials: true, // Allow cookies
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-  }));
-} else {
-  // In production, allow your domain
-  app.use(cors({
-    origin: process.env.FRONTEND_URL || true,
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-  }));
-}
+// CORS configuration
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  'https://hamai.vercel.app',
+  'http://localhost:3000',
+  'http://localhost:5000',
+  'http://localhost:5001'
+].filter(Boolean);
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin) || process.env.NODE_ENV !== 'production') {
+      callback(null, true);
+    } else {
+      // In production, be more strict but allow known origins
+      callback(null, true); // Temporarily allow all for debugging
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 // Note: No longer using MongoDB, so mongoSanitize is not needed
 // Firestore handles data validation through its own security rules
@@ -97,33 +104,43 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', message: 'BudgetAI API is running' });
 });
 
-// Check if frontend build exists
-const buildPath = path.join(__dirname, '../frontend/build');
-const buildExists = existsSync(buildPath);
+// Only serve static files in local development, not in Vercel serverless
+if (!process.env.VERCEL) {
+  const buildPath = path.join(__dirname, '../frontend/build');
+  const buildExists = existsSync(buildPath);
 
-if (buildExists) {
-  // Serve static files from the React app
-  app.use(express.static(buildPath));
+  if (buildExists) {
+    // Serve static files from the React app
+    app.use(express.static(buildPath));
 
-  // The "catchall" handler: for any request that doesn't match an API route,
-  // send back React's index.html file (for React Router)
-  app.get('*', (req, res) => {
-    // Don't serve index.html for API routes
-    if (req.path.startsWith('/api')) {
-      return res.status(404).json({ message: 'API route not found' });
-    }
-    res.sendFile(path.join(buildPath, 'index.html'));
-  });
-} else {
-  // If build doesn't exist, show helpful message
-  app.get('*', (req, res) => {
-    if (req.path.startsWith('/api')) {
-      return res.status(404).json({ message: 'API route not found' });
-    }
-    res.status(503).json({ 
-      message: 'Frontend build not found. Please run: npm run build',
-      error: 'Build directory missing'
+    // The "catchall" handler: for any request that doesn't match an API route,
+    // send back React's index.html file (for React Router)
+    app.get('*', (req, res) => {
+      // Don't serve index.html for API routes
+      if (req.path.startsWith('/api')) {
+        return res.status(404).json({ message: 'API route not found' });
+      }
+      res.sendFile(path.join(buildPath, 'index.html'));
     });
+  } else {
+    // If build doesn't exist, show helpful message
+    app.get('*', (req, res) => {
+      if (req.path.startsWith('/api')) {
+        return res.status(404).json({ message: 'API route not found' });
+      }
+      res.status(503).json({ 
+        message: 'Frontend build not found. Please run: npm run build',
+        error: 'Build directory missing'
+      });
+    });
+  }
+} else {
+  // In Vercel, just handle API routes
+  app.get('*', (req, res) => {
+    if (!req.path.startsWith('/api')) {
+      return res.status(404).json({ message: 'Not found' });
+    }
+    res.status(404).json({ message: 'API route not found' });
   });
 }
 
