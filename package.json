@@ -1,0 +1,40 @@
+{
+  "name": "budgetai-backend",
+  "version": "1.0.0",
+  "description": "BudgetAI Backend - MERN Stack Budget Management with AI",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "start:open": "node server.js & sleep 2 && open http://localhost:5000",
+    "dev": "nodemon server.js",
+    "sync-env": "node sync-env.cjs",
+    "install-frontend": "npm install --prefix ../frontend",
+    "install-all": "npm install && npm run install-frontend",
+    "dev:frontend": "npm start --prefix ../frontend",
+    "dev:all": "npm run sync-env && concurrently \"npm run dev\" \"npm run dev:frontend\"",
+    "build:frontend": "npm run sync-env && npm run build --prefix ../frontend",
+    "build:check": "node -e \"const fs = require('fs'); const path = require('path'); const buildPath = path.join(__dirname, '../frontend/build'); if (!fs.existsSync(buildPath)) { console.error('Frontend build not found! Run: npm run build (from root) or cd frontend && npm run build'); process.exit(1); }\""
+  },
+  "keywords": [
+    "budget",
+    "ai",
+    "mern"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@google/generative-ai": "^0.2.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "express-validator": "^7.0.1",
+    "firebase-admin": "^13.6.0",
+    "helmet": "^7.1.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "nodemon": "^3.0.2"
+  }
+}
