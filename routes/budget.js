@@ -317,16 +317,84 @@ router.post('/', [
 
 // Update budget entry
 router.put('/:id', [
+  body('receiver').optional().notEmpty().withMessage('Receiver cannot be empty'),
   body('store').optional().notEmpty().withMessage('Store cannot be empty'),
-  body('items').optional().isArray({ min: 1 }).withMessage('At least one item is required'),
-  body('subtotal').optional().isNumeric().withMessage('Subtotal must be a number'),
-  body('tax').optional().isNumeric().withMessage('Tax must be a number'),
-  body('category').optional().isIn(['grocery', 'utility', 'restaurant', 'shopping', 'entertainment', 'transport', 'healthcare', 'education', 'other']).withMessage('Invalid category')
+  body('items').optional().custom((value) => {
+    if (value === undefined || value === null) return true; // Optional
+    if (!Array.isArray(value)) {
+      throw new Error('Items must be an array');
+    }
+    if (value.length === 0) {
+      throw new Error('Items array cannot be empty');
+    }
+    // Validate each item - be lenient with types
+    for (let i = 0; i < value.length; i++) {
+      const item = value[i];
+      if (!item || typeof item !== 'object') {
+        throw new Error(`Item ${i + 1}: must be an object`);
+      }
+      if (!item.name || String(item.name).trim() === '') {
+        throw new Error(`Item ${i + 1}: name is required`);
+      }
+      const amount = parseFloat(item.amount);
+      if (isNaN(amount) || amount < 0) {
+        throw new Error(`Item ${i + 1}: amount must be a valid positive number`);
+      }
+    }
+    return true;
+  }),
+  body('subtotal').optional().custom((value) => {
+    if (value === undefined || value === null) return true;
+    const num = parseFloat(value);
+    if (isNaN(num)) {
+      throw new Error('Subtotal must be a valid number');
+    }
+    return true;
+  }),
+  body('tax').optional().custom((value) => {
+    if (value === undefined || value === null) return true;
+    const num = parseFloat(value);
+    if (isNaN(num)) {
+      throw new Error('Tax must be a valid number');
+    }
+    return true;
+  }),
+  body('total').optional().custom((value) => {
+    if (value === undefined || value === null) return true;
+    const num = parseFloat(value);
+    if (isNaN(num)) {
+      throw new Error('Total must be a valid number');
+    }
+    return true;
+  }),
+  body('category').optional().isIn(['grocery', 'utility', 'restaurant', 'shopping', 'entertainment', 'transport', 'healthcare', 'education', 'other']).withMessage('Invalid category'),
+  body('month').optional().custom((value) => {
+    if (value === undefined || value === null) return true;
+    const month = parseInt(value);
+    if (isNaN(month) || month < 1 || month > 12) {
+      throw new Error('Month must be between 1 and 12');
+    }
+    return true;
+  }),
+  body('year').optional().custom((value) => {
+    if (value === undefined || value === null) return true;
+    const year = parseInt(value);
+    if (isNaN(year) || year < 2020 || year > 2100) {
+      throw new Error('Year must be between 2020 and 2100');
+    }
+    return true;
+  })
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+      console.error('[PUT /budget/:id] Validation errors:', errors.array());
+      console.error('[PUT /budget/:id] Request body:', JSON.stringify(req.body, null, 2));
+      console.error('[PUT /budget/:id] Query params:', req.query);
+      return res.status(400).json({ 
+        message: 'Validation failed',
+        errors: errors.array() 
+      });
     }
 
     const updates = {};
@@ -343,10 +411,17 @@ router.put('/:id', [
     if (req.body.items) updates.items = sanitizeItems(req.body.items);
     if (req.body.subtotal !== undefined) updates.subtotal = req.body.subtotal;
     if (req.body.tax !== undefined) updates.tax = req.body.tax;
+    if (req.body.total !== undefined) updates.total = req.body.total;
     if (req.body.category) updates.category = sanitizeInput(req.body.category);
     if (req.body.notes !== undefined) updates.notes = sanitizeInput(req.body.notes);
-    if (req.body.month !== undefined) updates.month = parseInt(req.body.month);
-    if (req.body.year !== undefined) updates.year = parseInt(req.body.year);
+    
+    // Get month and year from query params or body
+    const month = req.query.month ? parseInt(req.query.month) : (req.body.month ? parseInt(req.body.month) : null);
+    const year = req.query.year ? parseInt(req.query.year) : (req.body.year ? parseInt(req.body.year) : null);
+    
+    // Add month and year to updates if provided
+    if (month !== null && !isNaN(month)) updates.month = month;
+    if (year !== null && !isNaN(year)) updates.year = year;
 
     const entry = await BudgetEntry.updateEntry(req.params.id, req.userId, updates);
     
