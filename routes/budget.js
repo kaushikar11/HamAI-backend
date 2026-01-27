@@ -154,10 +154,16 @@ router.post('/parse', [
     }
 
     const { text } = req.body;
-    const parsedData = await parseBudgetText(text);
+    
+    // Fetch user's categories to pass to Gemini
+    const prefs = await UserPreferences.getUserPreferences(req.userId);
+    const userCategories = prefs.categories || [];
+    
+    const parsedData = await parseBudgetText(text, userCategories);
 
     res.json(parsedData);
   } catch (error) {
+    console.error('Parse error:', error);
     res.status(500).json({ message: error.message || 'Failed to parse text' });
   }
 });
@@ -177,8 +183,12 @@ router.post('/enhance', [
 
     const { store, items } = req.body;
 
+    // Fetch user's categories to pass to Gemini
+    const prefs = await UserPreferences.getUserPreferences(req.userId);
+    const userCategories = prefs.categories || [];
+
     // Auto-categorize
-    const category = await categorizeBudget(store, items);
+    const category = await categorizeBudget(store, items, userCategories);
 
     // Generate notes
     const notes = await generateNotes(store, items, category);

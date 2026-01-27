@@ -2,53 +2,130 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-const categories = ['grocery', 'utility', 'restaurant', 'shopping', 'entertainment', 'transport', 'healthcare', 'education', 'other'];
+// Default categories (fallback if user categories not provided)
+const defaultCategories = ['grocery', 'utilities', 'rent', 'transport', 'restaurant', 'shopping', 'entertainment', 'healthcare', 'education', 'subscription', 'other'];
 
-const basicParseBudgetText = (text) => {
+const basicParseBudgetText = (text, userCategories = defaultCategories) => {
   const lines = String(text || '')
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean);
 
-  // Try to extract items with amounts (amount at end of line).
+  let store = 'Unknown Store';
+  let tax = 0;
   const items = [];
+  
+  // First pass: identify store, tax, subtotal, total
   for (const line of lines) {
+    const lowerLine = line.toLowerCase();
+    
+    // Check for store name (usually first line that doesn't have a price pattern)
+    if (!store || store === 'Unknown Store') {
+      // If line doesn't match price pattern and isn't a keyword, it might be store name
+      if (!line.match(/\$?\s*\d+(?:\.\d{1,2})?\s*$/) && 
+          !lowerLine.includes('subtotal') && 
+          !lowerLine.includes('total') && 
+          !lowerLine.includes('tax') &&
+          !lowerLine.includes('item')) {
+        store = line;
+      }
+    }
+    
+    // Extract tax
+    if (lowerLine.includes('tax')) {
+      const taxMatch = line.match(/\$?\s*(\d+(?:\.\d{1,2})?)\s*$/);
+      if (taxMatch) {
+        tax = Number.parseFloat(taxMatch[1]);
+        continue; // Skip tax line, don't add as item
+      }
+    }
+  }
+  
+  // Second pass: extract items (skip tax, subtotal, total lines)
+  for (const line of lines) {
+    const lowerLine = line.toLowerCase();
+    
+    // Skip tax, subtotal, total lines
+    if (lowerLine.includes('tax') || lowerLine.includes('subtotal') || lowerLine.includes('total')) {
+      continue;
+    }
+    
     // Match: "<name> <amount>" where amount is a number (optionally $)
-    const m = line.match(/^(.+?)\s+\$?\s*(-?\d+(?:\.\d{1,2})?)\s*$/);
-    if (!m) continue;
-
-    const name = m[1].trim();
-    const amount = Number.parseFloat(m[2]);
-    if (!name || Number.isNaN(amount)) continue;
-    if (amount < 0) continue;
-
-    items.push({ name, amount });
+    // Also handle formats like "Item: $amount" or "Item $amount"
+    const patterns = [
+      /^(.+?)\s+\$?\s*(-?\d+(?:\.\d{1,2})?)\s*$/,  // "name amount"
+      /^(.+?):\s*\$?\s*(-?\d+(?:\.\d{1,2})?)\s*$/,  // "name: amount"
+      /^(.+?)\s+\$(-?\d+(?:\.\d{1,2})?)\s*$/        // "name $amount"
+    ];
+    
+    let matched = false;
+    for (const pattern of patterns) {
+      const m = line.match(pattern);
+      if (m) {
+        const name = m[1].trim();
+        const amount = Number.parseFloat(m[2]);
+        if (name && !Number.isNaN(amount) && amount >= 0) {
+          items.push({ name, amount });
+          matched = true;
+          break;
+        }
+      }
+    }
   }
 
   const subtotal = items.reduce((sum, item) => sum + (item.amount || 0), 0);
 
-  // Very small heuristic: if we saw grocery-like words, pick grocery, else other.
+  // Category detection heuristics
   const joined = lines.join(' ').toLowerCase();
-  const isGrocery =
-    /\b(potato|potatoes|milk|bread|egg|eggs|banana|bananas|apple|apples|rice|vegetable|fruit|grocery)\b/.test(joined);
+  let detectedCategory = 'other';
+  
+  if (/\b(potato|potatoes|milk|bread|egg|eggs|banana|bananas|apple|apples|rice|vegetable|fruit|grocery|walmart|supermarket|store)\b/.test(joined)) {
+    detectedCategory = 'grocery';
+  } else if (/\b(restaurant|pizza|pasta|food|dine|eat|meal)\b/.test(joined)) {
+    detectedCategory = 'restaurant';
+  } else if (/\b(transport|uber|taxi|bus|train|gas|fuel)\b/.test(joined)) {
+    detectedCategory = 'transport';
+  } else if (/\b(electric|utility|utilities|water|gas|bill)\b/.test(joined)) {
+    detectedCategory = 'utilities';
+  } else if (/\b(rent|apartment|housing)\b/.test(joined)) {
+    detectedCategory = 'rent';
+  } else if (/\b(shop|mall|clothing|clothes|shirt|jeans|shoes)\b/.test(joined)) {
+    detectedCategory = 'shopping';
+  } else if (/\b(healthcare|pharmacy|prescription|medicine|doctor|hospital|cvs)\b/.test(joined)) {
+    detectedCategory = 'healthcare';
+  } else if (/\b(subscription|netflix|spotify|monthly)\b/.test(joined)) {
+    detectedCategory = 'subscription';
+  }
+
+  // Use detected category if it exists in user categories, otherwise use fallback
+  const defaultCategory = userCategories && userCategories.length > 0 
+    ? (userCategories.includes(detectedCategory) ? detectedCategory : (userCategories.includes('other') ? 'other' : userCategories[userCategories.length - 1]))
+    : detectedCategory;
 
   return {
-    store: 'Unknown Store',
+    store,
     items,
     subtotal,
-    tax: 0,
-    category: isGrocery ? 'grocery' : 'other',
+    tax,
+    category: defaultCategory,
     notes: ''
   };
 };
 
-export const parseBudgetText = async (text) => {
+export const parseBudgetText = async (text, userCategories = null) => {
   try {
     const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
+    // Use user categories if provided, otherwise use defaults
+    const categories = userCategories && userCategories.length > 0 
+      ? userCategories 
+      : defaultCategories;
 
     const prompt = `You are a budget parsing assistant. Parse the following unformatted budget text and extract structured information.
 
 Text: "${text}"
+
+Available categories for this user: ${categories.join(', ')}
 
 Extract and return a JSON object with the following structure:
 {
@@ -63,12 +140,13 @@ Extract and return a JSON object with the following structure:
 }
 
 Rules:
-- Extract all items with their amounts
-- Calculate subtotal from items
+- Extract ALL individual items with their respective prices/amounts from the text
+- Calculate subtotal from the sum of all items
 - Extract tax if mentioned, otherwise 0
-- Assign the most appropriate category based on store and items
+- Assign the most appropriate category from the provided list based on store and items
+- If the items don't clearly match any existing category, use the category that seems closest, or use "other" if truly unmatched
 - Add helpful notes if relevant (e.g., "shared with friends", "monthly subscription", etc.)
-- Return ONLY valid JSON, no additional text
+- Return ONLY valid JSON, no additional text or markdown
 
 JSON:`;
 
@@ -85,6 +163,14 @@ JSON:`;
       }
     }
 
+    // Try to extract JSON if it's embedded in text
+    if (!jsonText.startsWith('{')) {
+      const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        jsonText = jsonMatch[0];
+      }
+    }
+
     const parsed = JSON.parse(jsonText);
 
     // Validate and ensure all required fields
@@ -93,7 +179,7 @@ JSON:`;
       items: Array.isArray(parsed.items) ? parsed.items : [],
       subtotal: parsed.subtotal || parsed.items?.reduce((sum, item) => sum + (item.amount || 0), 0) || 0,
       tax: parsed.tax || 0,
-      category: categories.includes(parsed.category?.toLowerCase()) ? parsed.category.toLowerCase() : 'other',
+      category: categories.includes(parsed.category?.toLowerCase()) ? parsed.category.toLowerCase() : (categories.includes('other') ? 'other' : categories[0]),
       notes: parsed.notes || ''
     };
 
@@ -102,7 +188,7 @@ JSON:`;
 
     // If Gemini returns nothing useful, fall back to basic parsing.
     if (!budgetData.items.length) {
-      const fallback = basicParseBudgetText(text);
+      const fallback = basicParseBudgetText(text, categories);
       fallback.total = fallback.subtotal + fallback.tax;
       return fallback;
     }
@@ -111,16 +197,22 @@ JSON:`;
   } catch (error) {
     // Gemini can fail (model issues, quota, malformed JSON, etc). Fall back gracefully.
     console.error('Gemini API Error:', error);
-    const fallback = basicParseBudgetText(text);
+    console.error('Error details:', error.message);
+    const categories = userCategories && userCategories.length > 0 ? userCategories : defaultCategories;
+    const fallback = basicParseBudgetText(text, categories);
     fallback.total = fallback.subtotal + fallback.tax;
     if (fallback.items.length) return fallback;
     throw new Error('Failed to parse budget text. Please try again or enter manually.');
   }
 };
 
-export const categorizeBudget = async (store, items) => {
+export const categorizeBudget = async (store, items, userCategories = null) => {
   try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
+    const categories = userCategories && userCategories.length > 0 
+      ? userCategories 
+      : defaultCategories;
 
     const itemsText = items.map(item => `${item.name}: $${item.amount}`).join(', ');
     
@@ -136,10 +228,11 @@ Category:`;
     const response = await result.response;
     const category = response.text().trim().toLowerCase();
 
-    return categories.includes(category) ? category : 'other';
+    return categories.includes(category) ? category : (categories.includes('other') ? 'other' : categories[0]);
   } catch (error) {
     console.error('Gemini categorization error:', error);
-    return 'other';
+    const categories = userCategories && userCategories.length > 0 ? userCategories : defaultCategories;
+    return categories.includes('other') ? 'other' : categories[0];
   }
 };
 

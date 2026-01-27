@@ -1,22 +1,21 @@
 import { db } from '../firebase-admin.js';
 
-const COLLECTION_NAME = 'userPreferences';
-
 /**
  * Get or create user preferences document
+ * Stored at: users/{userId}/preferences (near entries document as requested)
  */
 export const getUserPreferences = async (userId) => {
-  const docRef = db.collection(COLLECTION_NAME).doc(userId);
+  const docRef = db.collection('users').doc(userId).collection('preferences').doc('settings');
   const doc = await docRef.get();
   
   if (doc.exists) {
     return doc.data();
   }
   
-  // Create default preferences
+  // Create default preferences with default categories and receivers
   const defaultPreferences = {
-    receiverNames: [],
-    categories: ['grocery', 'transport', 'utility', 'restaurant', 'shopping', 'entertainment', 'healthcare', 'education', 'other'],
+    receiverNames: ['personal', 'store', 'supermarket', 'online', 'restaurant', 'gas station', 'pharmacy', 'other'],
+    categories: ['grocery', 'utilities', 'rent', 'transport', 'restaurant', 'shopping', 'entertainment', 'healthcare', 'education', 'subscription', 'other'],
     createdAt: new Date(),
     updatedAt: new Date()
   };
@@ -29,7 +28,7 @@ export const getUserPreferences = async (userId) => {
  * Update receiver names for a user
  */
 export const updateReceiverNames = async (userId, receiverNames) => {
-  const docRef = db.collection(COLLECTION_NAME).doc(userId);
+  const docRef = db.collection('users').doc(userId).collection('preferences').doc('settings');
   await docRef.set({
     receiverNames,
     updatedAt: new Date()
@@ -57,7 +56,7 @@ export const addReceiverName = async (userId, receiverName) => {
  * Update categories for a user
  */
 export const updateCategories = async (userId, categories) => {
-  const docRef = db.collection(COLLECTION_NAME).doc(userId);
+  const docRef = db.collection('users').doc(userId).collection('preferences').doc('settings');
   await docRef.set({
     categories,
     updatedAt: new Date()
