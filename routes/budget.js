@@ -163,6 +163,22 @@ router.post(
 
       const { question } = req.body;
 
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/bb92b76a-412d-47b7-a39d-c25ffcf90250', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: 'debug-session',
+          runId: 'initial',
+          hypothesisId: 'H1',
+          location: 'routes/budget.js:/chat:beforeGetEntries',
+          message: 'Starting /budget/chat aggregation',
+          data: { userId: req.userId, firebaseUid: req.user?.uid || null },
+          timestamp: Date.now()
+        })
+      }).catch(() => {});
+      // #endregion agent log
+
       // Fetch ALL entries for this user (across months) with a generous limit
       const result = await BudgetEntry.getEntriesByUser(req.userId, {
         page: 1,
@@ -250,6 +266,33 @@ router.post(
         console.error('Error fetching legacy budgetEntries for Mr.Ham chat:', legacyError);
       }
 
+
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/bb92b76a-412d-47b7-a39d-c25ffcf90250', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: 'debug-session',
+          runId: 'initial',
+          hypothesisId: 'H2',
+          location: 'routes/budget.js:/chat:afterCombine',
+          message: 'Combined entries from new and legacy structures',
+          data: {
+            userId: req.userId,
+            combinedCount: combinedEntries.length,
+            sample: combinedEntries.slice(0, 5).map(e => ({
+              id: e.id,
+              month: e.month,
+              year: e.year,
+              total: e.total,
+              category: e.category
+            }))
+          },
+          timestamp: Date.now()
+        })
+      }).catch(() => {});
+      // #endregion agent log
+
       // Build aggregate summaries for better insights
       let overallTotal = 0;
       let overallSubtotal = 0;
@@ -316,6 +359,26 @@ router.post(
         categories: prefs.categories || [],
         receivers: prefs.receiverNames || []
       };
+
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/bb92b76a-412d-47b7-a39d-c25ffcf90250', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: 'debug-session',
+          runId: 'initial',
+          hypothesisId: 'H3',
+          location: 'routes/budget.js:/chat:beforeGemini',
+          message: 'Aggregated budget context for Mr Ham',
+          data: {
+            summary: budgetContext.summary,
+            byCategoryKeys: Object.keys(byCategory),
+            byMonthKeys: Object.keys(byMonth)
+          },
+          timestamp: Date.now()
+        })
+      }).catch(() => {});
+      // #endregion agent log
 
       const answer = await answerBudgetQuestion(question, budgetContext);
 

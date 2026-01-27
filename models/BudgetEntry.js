@@ -259,23 +259,54 @@ export const getEntriesByUser = async (userId, options = {}) => {
     
     for (const monthDoc of monthsSnapshot.docs) {
       const entriesRef = monthDoc.ref.collection('entries');
-      let query = entriesRef.orderBy('date', 'desc');
-      
+      let query = entriesRef;
+
       // Filter by category if provided
       if (category && category !== 'all' && category !== '') {
         query = query.where('category', '==', category);
       }
-      
+
       const snapshot = await query.get();
       snapshot.docs.forEach(doc => {
         allEntries.push({ id: doc.id, ...doc.data() });
       });
     }
-    
-    // Sort all entries by date descending
+
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/bb92b76a-412d-47b7-a39d-c25ffcf90250', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: 'debug-session',
+        runId: 'initial',
+        hypothesisId: 'H1',
+        location: 'models/BudgetEntry.js:getEntriesByUser:noMonthYear',
+        message: 'Collected entries across all months for user',
+        data: {
+          userId,
+          monthsCount: monthsSnapshot.size,
+          allEntriesCount: allEntries.length,
+          sample: allEntries.slice(0, 3).map(e => ({
+            id: e.id,
+            month: e.month,
+            year: e.year,
+            total: e.total,
+            category: e.category
+          }))
+        },
+        timestamp: Date.now()
+      })
+    }).catch(() => {});
+    // #endregion agent log
+
+    // Sort all entries by createdAt/date descending (in-memory, tolerant of missing fields)
     allEntries.sort((a, b) => {
-      const dateA = a.date?.toDate ? a.date.toDate() : new Date(a.date || 0);
-      const dateB = b.date?.toDate ? b.date.toDate() : new Date(b.date || 0);
+      const dateA =
+        a.createdAt?.toDate?.() ??
+        (a.createdAt instanceof Date ? a.createdAt : a.date?.toDate?.() ?? new Date(a.date || 0));
+      const dateB =
+        b.createdAt?.toDate?.() ??
+        (b.createdAt instanceof Date ? b.createdAt : b.date?.toDate?.() ?? new Date(b.date || 0));
       return dateB - dateA;
     });
     
@@ -304,12 +335,21 @@ export const getEntriesByUser = async (userId, options = {}) => {
     }
 
     try {
-      query = query.orderBy('date', 'desc');
-      const snapshot = await query.limit(limit).get();
+      const snapshot = await query.get();
       entries = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       }));
+      // Sort in-memory similar to above
+      entries.sort((a, b) => {
+        const dateA =
+          a.createdAt?.toDate?.() ??
+          (a.createdAt instanceof Date ? a.createdAt : a.date?.toDate?.() ?? new Date(a.date || 0));
+        const dateB =
+          b.createdAt?.toDate?.() ??
+          (b.createdAt instanceof Date ? b.createdAt : b.date?.toDate?.() ?? new Date(b.date || 0));
+        return dateB - dateA;
+      });
       total = entries.length;
     } catch (error) {
       console.warn('Error querying old structure:', error.message);
