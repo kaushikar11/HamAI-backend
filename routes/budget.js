@@ -4,7 +4,7 @@ import verifyToken from '../middleware/auth.js';
 import * as BudgetEntry from '../models/BudgetEntry.js';
 import * as User from '../models/User.js';
 import * as UserPreferences from '../models/UserPreferences.js';
-import { parseBudgetText, categorizeBudget, generateNotes } from '../services/geminiService.js';
+import { parseBudgetText, categorizeBudget, generateNotes, answerBudgetQuestion } from '../services/geminiService.js';
 import { sanitizeInput, sanitizeItems } from '../utils/sanitize.js';
 
 const router = express.Router();
@@ -142,6 +142,154 @@ router.get('/stats/summary', async (req, res) => {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
+
+// Mr.Ham chatbot - answer questions about the user's own financial data
+router.post(
+  '/chat',
+  [
+    body('question')
+      .notEmpty()
+      .withMessage('Question is required')
+      .isString()
+      .withMessage('Question must be a string')
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ message: 'Validation failed', errors: errors.array() });
+      }
+
+      const { question } = req.body;
+
+      // Fetch ALL entries for this user (across months) with a generous limit
+      const result = await BudgetEntry.getEntriesByUser(req.userId, {
+        page: 1,
+        limit: 1000 // cap for safety
+      });
+
+      const rawEntries = result.entries || [];
+
+      // Normalize entries to a compact, model-friendly format
+      const entries = rawEntries.map((entry) => {
+        const {
+          id,
+          receiver,
+          store,
+          category,
+          total,
+          subtotal,
+          tax,
+          month,
+          year,
+          notes,
+          items,
+          createdAt
+        } = entry;
+
+        return {
+          id,
+          receiver: receiver || store || 'Unknown',
+          category: category || 'other',
+          total: Number(total || 0),
+          subtotal: Number(subtotal || 0),
+          tax: Number(tax || 0),
+          month: month || null,
+          year: year || null,
+          notes: notes || '',
+          items: Array.isArray(items)
+            ? items.map((it) => ({
+                name: it.name || '',
+                amount: Number(it.amount || 0)
+              }))
+            : [],
+          createdAt:
+            createdAt?.toDate && typeof createdAt.toDate === 'function'
+              ? createdAt.toDate().toISOString()
+              : createdAt || null
+        };
+      });
+
+      // Build aggregate summaries for better insights
+      let overallTotal = 0;
+      let overallSubtotal = 0;
+      let overallTax = 0;
+      let earliestYear = null;
+      let latestYear = null;
+
+      const byCategory = {};
+      const byMonth = {}; // key: "YYYY-MM"
+
+      entries.forEach((e) => {
+        overallTotal += e.total || 0;
+        overallSubtotal += e.subtotal || 0;
+        overallTax += e.tax || 0;
+
+        if (e.year) {
+          if (earliestYear === null || e.year < earliestYear) earliestYear = e.year;
+          if (latestYear === null || e.year > latestYear) latestYear = e.year;
+        }
+
+        const cat = e.category || 'other';
+        if (!byCategory[cat]) {
+          byCategory[cat] = { total: 0, count: 0, average: 0 };
+        }
+        byCategory[cat].total += e.total || 0;
+        byCategory[cat].count += 1;
+
+        if (e.year && e.month) {
+          const key = `${e.year}-${String(e.month).padStart(2, '0')}`;
+          if (!byMonth[key]) {
+            byMonth[key] = { total: 0, count: 0 };
+          }
+          byMonth[key].total += e.total || 0;
+          byMonth[key].count += 1;
+        }
+      });
+
+      // Compute averages
+      const overallCount = entries.length;
+      const averagePerTransaction = overallCount > 0 ? overallTotal / overallCount : 0;
+
+      Object.keys(byCategory).forEach((cat) => {
+        const data = byCategory[cat];
+        data.average = data.count > 0 ? data.total / data.count : 0;
+      });
+
+      // Fetch user preferences for additional context
+      const prefs = await UserPreferences.getUserPreferences(req.userId);
+
+      // Compact context for Mr. Ham – only aggregated stats and preferences,
+      // not every raw entry, to keep each question lightweight.
+      const budgetContext = {
+        summary: {
+          overallTotal,
+          overallSubtotal,
+          overallTax,
+          overallCount,
+          averagePerTransaction,
+          earliestYear,
+          latestYear
+        },
+        byCategory,
+        byMonth,
+        categories: prefs.categories || [],
+        receivers: prefs.receiverNames || []
+      };
+
+      const answer = await answerBudgetQuestion(question, budgetContext);
+
+      return res.json({
+        answer
+      });
+    } catch (error) {
+      console.error('Error in /budget/chat:', error);
+      res
+        .status(500)
+        .json({ message: error.message || 'Mr. Ham is having trouble answering right now.' });
+    }
+  }
+);
 
 // Parse unformatted text using AI
 router.post('/parse', [

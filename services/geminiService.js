@@ -268,6 +268,68 @@ Category:`;
   }
 };
 
+/**
+ * Answer user questions about their own financial data.
+ * This powers the Mr.Ham chatbot and MUST ONLY use the provided data.
+ *
+ * @param {string} question - The user's natural language question.
+ * @param {object} budgetContext - Aggregated data about the user's finances:
+ *   {
+ *     summary: { overallTotal, overallCount, earliestYear, latestYear, totalTax, averagePerTransaction },
+ *     byCategory: { [category]: { total, count } },
+ *     byMonth: { [yearMonth]: { total, count } },
+ *     categories: string[],
+ *     receivers: string[]
+ *   }
+ */
+export const answerBudgetQuestion = async (question, budgetContext) => {
+  try {
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+
+    // Keep the payload compact: only send aggregates and preferences, not every raw entry
+    const safeContext = { ...budgetContext };
+
+    const contextJson = JSON.stringify(safeContext, null, 2);
+
+    const prompt = `
+You are **Mr. Ham**, a friendly pig-themed personal finance assistant for a single user. 
+You love saving coins in the piggy bank and helping this one user understand where their money “oinked” off to.
+
+You are given this user's historical budgeting data as JSON. You must follow these rules strictly:
+
+- ONLY use the data provided in the JSON context. Do **NOT** invent or assume any numbers.
+- If the user asks anything that cannot be answered from this data (for example, stock tips, global markets, future predictions, or other people's data), clearly say that you can only answer questions about **their HamAI budgeting data**.
+- When numbers are requested, calculate them precisely from the provided data.
+- If the question is vague, infer the most helpful interpretation **about their data** and clearly state your assumptions.
+- Always speak as **\"Mr. Ham\"**, keep the tone warm, slightly pig-themed (a light \"oink\" joke now and then), concise, and practical.
+- Prefer short paragraphs and bullet points. Avoid long essays.
+- Currency is in whatever units the data uses (usually dollars); do not change currency.
+
+USER QUESTION:
+${question}
+
+USER BUDGET DATA (JSON):
+${contextJson}
+
+Now answer the user's question using ONLY this data.
+
+If helpful, you may include:
+- High-level summary (1–3 bullets)
+- Specific numbers (totals, averages, top categories, trends)
+- Actionable suggestions based on their own spending patterns
+
+Do NOT return JSON. Respond in plain text/markdown as Mr. Ham.
+`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    return response.text().trim();
+  } catch (error) {
+    console.error('Gemini insights (Mr.Ham) error:', error);
+    throw new Error('Mr. Ham is having trouble answering right now. Please try again in a moment.');
+  }
+};
+
 export const generateNotes = async (store, items, category) => {
   try {
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
