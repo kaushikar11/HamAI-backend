@@ -377,7 +377,13 @@ router.put('/:id', [
     }
     return true;
   }),
-  body('category').optional().isIn(['grocery', 'utility', 'restaurant', 'shopping', 'entertainment', 'transport', 'healthcare', 'education', 'other']).withMessage('Invalid category'),
+  body('category').optional().custom((value) => {
+    if (value === undefined || value === null) return true;
+    if (typeof value !== 'string' || value.trim() === '') {
+      throw new Error('Category must be a non-empty string');
+    }
+    return true;
+  }),
   body('month').optional().custom((value) => {
     if (value === undefined || value === null) return true;
     const month = parseInt(value);
