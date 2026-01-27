@@ -4,6 +4,7 @@ import verifyToken from '../middleware/auth.js';
 import * as BudgetEntry from '../models/BudgetEntry.js';
 import * as User from '../models/User.js';
 import * as UserPreferences from '../models/UserPreferences.js';
+import { db } from '../firebase-admin.js';
 import { parseBudgetText, categorizeBudget, generateNotes, answerBudgetQuestion } from '../services/geminiService.js';
 import { sanitizeInput, sanitizeItems } from '../utils/sanitize.js';
 
@@ -170,7 +171,7 @@ router.post(
 
       const rawEntries = result.entries || [];
 
-      // Normalize entries to a compact, model-friendly format
+      // Normalize entries from new structure
       const entries = rawEntries.map((entry) => {
         const {
           id,
@@ -210,6 +211,45 @@ router.post(
         };
       });
 
+      // Also pull entries from the legacy root collection for this user
+      const combinedEntries = [...entries];
+      const existingIds = new Set(entries.map((e) => e.id));
+
+      try {
+        const oldSnapshot = await db
+          .collection('budgetEntries')
+          .where('userId', '==', req.userId)
+          .get();
+
+        oldSnapshot.docs.forEach((doc) => {
+          if (existingIds.has(doc.id)) return;
+          const data = doc.data() || {};
+          combinedEntries.push({
+            id: doc.id,
+            receiver: data.receiver || data.store || 'Unknown',
+            category: data.category || 'other',
+            total: Number(data.total || 0),
+            subtotal: Number(data.subtotal || 0),
+            tax: Number(data.tax || 0),
+            month: data.month || null,
+            year: data.year || null,
+            notes: data.notes || '',
+            items: Array.isArray(data.items)
+              ? data.items.map((it) => ({
+                  name: it.name || '',
+                  amount: Number(it.amount || 0)
+                }))
+              : [],
+            createdAt:
+              data.createdAt?.toDate && typeof data.createdAt.toDate === 'function'
+                ? data.createdAt.toDate().toISOString()
+                : data.createdAt || null
+          });
+        });
+      } catch (legacyError) {
+        console.error('Error fetching legacy budgetEntries for Mr.Ham chat:', legacyError);
+      }
+
       // Build aggregate summaries for better insights
       let overallTotal = 0;
       let overallSubtotal = 0;
@@ -220,7 +260,7 @@ router.post(
       const byCategory = {};
       const byMonth = {}; // key: "YYYY-MM"
 
-      entries.forEach((e) => {
+      combinedEntries.forEach((e) => {
         overallTotal += e.total || 0;
         overallSubtotal += e.subtotal || 0;
         overallTax += e.tax || 0;
@@ -248,7 +288,7 @@ router.post(
       });
 
       // Compute averages
-      const overallCount = entries.length;
+      const overallCount = combinedEntries.length;
       const averagePerTransaction = overallCount > 0 ? overallTotal / overallCount : 0;
 
       Object.keys(byCategory).forEach((cat) => {
