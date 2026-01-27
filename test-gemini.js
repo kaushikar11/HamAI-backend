@@ -4,9 +4,23 @@
  */
 
 import dotenv from 'dotenv';
-import { parseBudgetText } from './services/geminiService.js';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 
-dotenv.config({ path: './backend/.env' });
+// Load .env BEFORE importing services (services initialize on import)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+dotenv.config({ path: join(__dirname, '.env') });
+
+// Verify API key is loaded before importing service
+if (!process.env.GEMINI_API_KEY) {
+  console.error('❌ ERROR: GEMINI_API_KEY not loaded from .env file!');
+  process.exit(1);
+}
+console.log('✓ API Key loaded (length:', process.env.GEMINI_API_KEY.length + ')');
+
+// Now import the service (it will use the loaded env vars)
+import { parseBudgetText } from './services/geminiService.js';
 
 // Test cases
 const testCases = [

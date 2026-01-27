@@ -1,4 +1,14 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+// Ensure .env is loaded (in case service is imported before server.js loads it)
+if (!process.env.GEMINI_API_KEY) {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+  dotenv.config({ path: join(__dirname, '..', '.env') });
+}
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -50,6 +60,11 @@ const basicParseBudgetText = (text, userCategories = defaultCategories) => {
       continue;
     }
     
+    // Skip lines that are clearly store names or headers
+    if (lowerLine.includes('bought') || lowerLine.includes('today') || lowerLine.includes('receipt')) {
+      continue;
+    }
+    
     // Match: "<name> <amount>" where amount is a number (optionally $)
     // Also handle formats like "Item: $amount" or "Item $amount"
     const patterns = [
@@ -69,6 +84,20 @@ const basicParseBudgetText = (text, userCategories = defaultCategories) => {
           matched = true;
           break;
         }
+      }
+    }
+    
+    // If no price pattern matched but line looks like an item name (not a header/keyword)
+    // Extract as item with 0 amount (user can fill in later)
+    if (!matched && line.trim().length > 0 && 
+        !lowerLine.includes('store') && 
+        !lowerLine.includes('payment') &&
+        !lowerLine.includes('company') &&
+        line.trim().length < 50) { // Reasonable item name length
+      const cleanName = line.trim();
+      // Only add if it looks like an item (not a number, not a date, etc.)
+      if (!/^\d+$/.test(cleanName) && !/^\d{1,2}[\/\-]\d{1,2}/.test(cleanName)) {
+        items.push({ name: cleanName, amount: 0 });
       }
     }
   }
@@ -114,7 +143,7 @@ const basicParseBudgetText = (text, userCategories = defaultCategories) => {
 
 export const parseBudgetText = async (text, userCategories = null) => {
   try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
     // Use user categories if provided, otherwise use defaults
     const categories = userCategories && userCategories.length > 0 
@@ -190,6 +219,7 @@ JSON:`;
     if (!budgetData.items.length) {
       const fallback = basicParseBudgetText(text, categories);
       fallback.total = fallback.subtotal + fallback.tax;
+      // Return fallback even if items have 0 amounts (user can fill in prices manually)
       return fallback;
     }
 
@@ -201,14 +231,16 @@ JSON:`;
     const categories = userCategories && userCategories.length > 0 ? userCategories : defaultCategories;
     const fallback = basicParseBudgetText(text, categories);
     fallback.total = fallback.subtotal + fallback.tax;
-    if (fallback.items.length) return fallback;
+    // Return fallback even if items have 0 amounts (user can fill in prices manually)
+    // Only throw error if absolutely nothing was extracted
+    if (fallback.items.length > 0) return fallback;
     throw new Error('Failed to parse budget text. Please try again or enter manually.');
   }
 };
 
 export const categorizeBudget = async (store, items, userCategories = null) => {
   try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
     const categories = userCategories && userCategories.length > 0 
       ? userCategories 
@@ -238,7 +270,7 @@ Category:`;
 
 export const generateNotes = async (store, items, category) => {
   try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
     const itemsText = items.map(item => item.name).join(', ');
     
