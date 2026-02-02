@@ -484,9 +484,7 @@ curl -X POST http://localhost:5001/api/auth/verify \
   -d '{"token": "your_firebase_token"}'
 ```
 
-### Automated Testing
-
-Add test scripts to `package.json`:
+### Automated TestingAdd test scripts to `package.json`:
 
 ```json
 {
