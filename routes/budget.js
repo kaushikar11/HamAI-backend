@@ -5,7 +5,7 @@ import * as BudgetEntry from '../models/BudgetEntry.js';
 import * as User from '../models/User.js';
 import * as UserPreferences from '../models/UserPreferences.js';
 import { db } from '../firebase-admin.js';
-import { parseBudgetText, categorizeBudget, generateNotes, answerBudgetQuestion } from '../services/geminiService.js';
+import { parseBudgetText, categorizeBudget, generateNotes, answerBudgetQuestion, parseBatchEntries } from '../services/geminiService.js';
 import { sanitizeInput, sanitizeItems } from '../utils/sanitize.js';
 
 const router = express.Router();
@@ -106,20 +106,22 @@ router.get('/stats/summary', async (req, res) => {
 
     const entries = result.entries || [];
     console.log(`Found ${entries.length} entries for month ${month}, year ${year}`);
-    
-    // Calculate statistics
-    const totalSpent = entries.reduce((sum, entry) => sum + (entry.total || 0), 0);
-    const totalEntries = entries.length;
-    
-    // Group by category
+
+    // Spending statistics are based on expenses only (income is recorded but is inflow,
+    // so it should not inflate "Total Spent" or the "Spending by Category" breakdown).
+    const expenseEntries = entries.filter(entry => (entry.type || 'expense') !== 'income');
+    const totalSpent = expenseEntries.reduce((sum, entry) => sum + (entry.total || 0), 0);
+    const totalEntries = expenseEntries.length;
+
+    // Group by category (expenses only)
     const categoryTotals = {};
-    entries.forEach(entry => {
+    expenseEntries.forEach(entry => {
       const cat = entry.category || 'other';
       categoryTotals[cat] = (categoryTotals[cat] || 0) + (entry.total || 0);
     });
 
-    // Get all unique categories
-    const categories = [...new Set(entries.map(e => e.category || 'other'))];
+    // Get all unique categories (expenses only)
+    const categories = [...new Set(expenseEntries.map(e => e.category || 'other'))];
 
     res.json({
       month,
@@ -132,6 +134,7 @@ router.get('/stats/summary', async (req, res) => {
         const { date, ...entryWithoutDate } = entry;
         return {
           ...entryWithoutDate,
+          type: entry.type || 'expense',
           createdAt: entry.createdAt?.toDate ? entry.createdAt.toDate().toISOString() : entry.createdAt,
           updatedAt: entry.updatedAt?.toDate ? entry.updatedAt.toDate().toISOString() : entry.updatedAt,
           _id: entry.id
@@ -404,18 +407,42 @@ router.post('/parse', [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { text } = req.body;
-    
-    // Fetch user's categories to pass to Gemini
+    const { text, type } = req.body;
+
+    // Fetch user's categories and receivers to pass to Gemini
     const prefs = await UserPreferences.getUserPreferences(req.userId);
     const userCategories = prefs.categories || [];
-    
-    const parsedData = await parseBudgetText(text, userCategories);
+    const userReceivers = prefs.receiverNames || [];
+
+    const parsedData = await parseBudgetText(text, userCategories, type, userReceivers);
 
     res.json(parsedData);
   } catch (error) {
     console.error('Parse error:', error);
     res.status(500).json({ message: error.message || 'Failed to parse text' });
+  }
+});
+
+// Parse a batch of entries from a structured prompt
+router.post('/parse-batch', [
+  body('text').notEmpty().withMessage('Text is required')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { text } = req.body;
+    const prefs = await UserPreferences.getUserPreferences(req.userId);
+    const userCategories = prefs.categories || [];
+    const userReceivers = prefs.receiverNames || [];
+
+    const result = await parseBatchEntries(text, userCategories, userReceivers);
+    res.json(result);
+  } catch (error) {
+    console.error('Batch parse error:', error);
+    res.status(500).json({ message: error.message || 'Failed to parse batch entries' });
   }
 });
 
@@ -472,6 +499,7 @@ router.get('/', async (req, res) => {
       const { date, ...entryWithoutDate } = entry;
       return {
         ...entryWithoutDate,
+        type: entry.type || 'expense',
         createdAt: entry.createdAt?.toDate ? entry.createdAt.toDate().toISOString() : entry.createdAt,
         updatedAt: entry.updatedAt?.toDate ? entry.updatedAt.toDate().toISOString() : entry.updatedAt,
         _id: entry.id // Keep _id for compatibility
@@ -502,6 +530,7 @@ router.get('/:id', async (req, res) => {
     const { date, ...entryWithoutDate } = entry;
     const entryResponse = {
       ...entryWithoutDate,
+      type: entry.type || 'expense',
       createdAt: entry.createdAt?.toDate ? entry.createdAt.toDate().toISOString() : entry.createdAt,
       updatedAt: entry.updatedAt?.toDate ? entry.updatedAt.toDate().toISOString() : entry.updatedAt,
       _id: entry.id // Keep _id for compatibility
@@ -523,6 +552,7 @@ router.post('/', [
   body('subtotal').isNumeric().withMessage('Subtotal must be a number'),
   body('tax').optional().isNumeric().withMessage('Tax must be a number'),
   body('category').notEmpty().withMessage('Category is required'),
+  body('type').optional().isIn(['expense', 'income']).withMessage('Type must be expense or income'),
   body('month').optional().isInt({ min: 1, max: 12 }).withMessage('Month must be between 1 and 12'),
   body('year').optional().isInt({ min: 2020, max: 2100 }).withMessage('Year must be valid')
 ], async (req, res) => {
@@ -532,8 +562,9 @@ router.post('/', [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { store, receiver, items, subtotal, tax = 0, category, notes = '', month, year } = req.body;
-    
+    const { store, receiver, items, subtotal, tax = 0, stateTax = 0, federalTax = 0, category, notes = '', month, year, type } = req.body;
+    const normalizedType = type === 'income' ? 'income' : 'expense';
+
     // Validate that either receiver or store is provided
     if (!receiver && !store) {
       return res.status(400).json({ errors: [{ msg: 'Receiver or Store is required' }] });
@@ -545,7 +576,9 @@ router.post('/', [
     const sanitizedItems = sanitizeItems(items);
     const sanitizedNotes = sanitizeInput(notes);
 
-    const total = subtotal + tax;
+    // Income: total = subtotal - tax (tax is a deduction)
+    // Expense: total = subtotal + tax
+    const total = normalizedType === 'income' ? subtotal - tax : subtotal + tax;
 
     const entry = await BudgetEntry.createEntry({
       userId: req.userId,
@@ -554,8 +587,11 @@ router.post('/', [
       items: sanitizedItems,
       subtotal,
       tax,
+      stateTax,
+      federalTax,
       total,
       category: sanitizeInput(category),
+      type: normalizedType,
       notes: sanitizedNotes,
       month: month || new Date().getMonth() + 1,
       year: year || new Date().getFullYear()
@@ -635,6 +671,13 @@ router.put('/:id', [
     }
     return true;
   }),
+  body('type').optional().custom((value) => {
+    if (value === undefined || value === null) return true;
+    if (value !== 'expense' && value !== 'income') {
+      throw new Error('Type must be expense or income');
+    }
+    return true;
+  }),
   body('month').optional().custom((value) => {
     if (value === undefined || value === null) return true;
     const month = parseInt(value);
@@ -678,8 +721,11 @@ router.put('/:id', [
     if (req.body.items) updates.items = sanitizeItems(req.body.items);
     if (req.body.subtotal !== undefined) updates.subtotal = req.body.subtotal;
     if (req.body.tax !== undefined) updates.tax = req.body.tax;
+    if (req.body.stateTax !== undefined) updates.stateTax = req.body.stateTax;
+    if (req.body.federalTax !== undefined) updates.federalTax = req.body.federalTax;
     if (req.body.total !== undefined) updates.total = req.body.total;
     if (req.body.category) updates.category = sanitizeInput(req.body.category);
+    if (req.body.type === 'expense' || req.body.type === 'income') updates.type = req.body.type;
     if (req.body.notes !== undefined) updates.notes = sanitizeInput(req.body.notes);
     
     // Get month and year from query params or body

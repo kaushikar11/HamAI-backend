@@ -141,16 +141,61 @@ const basicParseBudgetText = (text, userCategories = defaultCategories) => {
   };
 };
 
-export const parseBudgetText = async (text, userCategories = null) => {
+const defaultIncomeCategories = ['deposit', 'refund', 'salary'];
+const defaultIncomeSenders = ['Kaushik', 'Parents', 'Uncle', 'NYU'];
+
+export const parseBudgetText = async (text, userCategories = null, type = 'expense', userReceivers = []) => {
   try {
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
+    const isIncome = type === 'income';
+
     // Use user categories if provided, otherwise use defaults
-    const categories = userCategories && userCategories.length > 0 
-      ? userCategories 
+    const baseCategories = userCategories && userCategories.length > 0
+      ? userCategories
       : defaultCategories;
 
-    const prompt = `You are a budget parsing assistant. Parse the following unformatted budget text and extract structured information.
+    // For income, prepend income-specific categories so they rank first
+    const categories = isIncome
+      ? [...new Set([...defaultIncomeCategories, ...baseCategories])]
+      : baseCategories;
+
+    // Build sender suggestions for income
+    const senderList = isIncome
+      ? [...new Set([...defaultIncomeSenders, ...userReceivers])].join(', ')
+      : '';
+
+    const prompt = isIncome
+      ? `You are a budget parsing assistant. Parse the following income/payment text and extract structured information.
+
+Text: "${text}"
+
+Available categories for this user: ${categories.join(', ')}
+Known senders/payers: ${senderList}
+
+Extract and return a JSON object with the following structure:
+{
+  "store": "sender or payer name (the person/org paying you)",
+  "items": [
+    {"name": "income description", "amount": number}
+  ],
+  "subtotal": number,
+  "stateTax": number (state tax deducted, default 0 if not mentioned),
+  "federalTax": number (federal tax deducted, default 0 if not mentioned),
+  "tax": number (total tax = stateTax + federalTax, default 0),
+  "category": "one of: ${categories.join(', ')}",
+  "notes": "optional notes or context"
+}
+
+Rules:
+- "store" is the SENDER (who paid you), not a store
+- Extract all income line items with their amounts
+- If state tax and/or federal tax are mentioned, extract them separately; set "tax" = stateTax + federalTax
+- Assign the most appropriate income category (deposit, salary, refund are preferred if applicable)
+- Return ONLY valid JSON, no additional text or markdown
+
+JSON:`
+      : `You are a budget parsing assistant. Parse the following unformatted budget text and extract structured information.
 
 Text: "${text}"
 
@@ -203,23 +248,30 @@ JSON:`;
     const parsed = JSON.parse(jsonText);
 
     // Validate and ensure all required fields
+    const stateTax = parsed.stateTax || 0;
+    const federalTax = parsed.federalTax || 0;
+    const combinedTax = isIncome ? stateTax + federalTax : (parsed.tax || 0);
+    const subtotal = parsed.subtotal || parsed.items?.reduce((sum, item) => sum + (item.amount || 0), 0) || 0;
     const budgetData = {
-      store: parsed.store || 'Unknown Store',
+      store: parsed.store || (isIncome ? 'Unknown Sender' : 'Unknown Store'),
       items: Array.isArray(parsed.items) ? parsed.items : [],
-      subtotal: parsed.subtotal || parsed.items?.reduce((sum, item) => sum + (item.amount || 0), 0) || 0,
-      tax: parsed.tax || 0,
+      subtotal,
+      tax: combinedTax,
+      stateTax,
+      federalTax,
       category: categories.includes(parsed.category?.toLowerCase()) ? parsed.category.toLowerCase() : (categories.includes('other') ? 'other' : categories[0]),
       notes: parsed.notes || ''
     };
 
-    // Calculate total
-    budgetData.total = budgetData.subtotal + budgetData.tax;
+    // Calculate total (income deducts tax, expense adds it)
+    budgetData.total = isIncome ? budgetData.subtotal - budgetData.tax : budgetData.subtotal + budgetData.tax;
 
     // If Gemini returns nothing useful, fall back to basic parsing.
     if (!budgetData.items.length) {
       const fallback = basicParseBudgetText(text, categories);
-      fallback.total = fallback.subtotal + fallback.tax;
-      // Return fallback even if items have 0 amounts (user can fill in prices manually)
+      fallback.stateTax = 0;
+      fallback.federalTax = 0;
+      fallback.total = isIncome ? fallback.subtotal - fallback.tax : fallback.subtotal + fallback.tax;
       return fallback;
     }
 
@@ -228,11 +280,12 @@ JSON:`;
     // Gemini can fail (model issues, quota, malformed JSON, etc). Fall back gracefully.
     console.error('Gemini API Error:', error);
     console.error('Error details:', error.message);
-    const categories = userCategories && userCategories.length > 0 ? userCategories : defaultCategories;
-    const fallback = basicParseBudgetText(text, categories);
-    fallback.total = fallback.subtotal + fallback.tax;
-    // Return fallback even if items have 0 amounts (user can fill in prices manually)
-    // Only throw error if absolutely nothing was extracted
+    const isIncomeFallback = type === 'income';
+    const fallbackCats = userCategories && userCategories.length > 0 ? userCategories : defaultCategories;
+    const fallback = basicParseBudgetText(text, fallbackCats);
+    fallback.stateTax = 0;
+    fallback.federalTax = 0;
+    fallback.total = isIncomeFallback ? fallback.subtotal - fallback.tax : fallback.subtotal + fallback.tax;
     if (fallback.items.length > 0) return fallback;
     throw new Error('Failed to parse budget text. Please try again or enter manually.');
   }
@@ -327,6 +380,119 @@ Do NOT return JSON. Respond in plain text/markdown as Mr. Ham.
   } catch (error) {
     console.error('Gemini insights (Mr.Ham) error:', error);
     throw new Error('Mr. Ham is having trouble answering right now. Please try again in a moment.');
+  }
+};
+
+export const parseBatchEntries = async (text, userCategories = null, userReceivers = []) => {
+  try {
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+
+    const expenseCategories = userCategories && userCategories.length > 0 ? userCategories : defaultCategories;
+    const incomeCategories = [...new Set([...defaultIncomeCategories, ...expenseCategories])];
+    const allCategories = [...new Set([...defaultIncomeCategories, ...expenseCategories])];
+
+    const knownReceivers = [...new Set([...defaultIncomeSenders, ...userReceivers])].join(', ');
+    const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
+    const prompt = `You are a financial data extraction assistant. The user wants to add multiple budget transactions in bulk.
+
+User input:
+"${text}"
+
+Your job:
+1. If the input is clearly structured financial data (mentions amounts, months/dates, income or expense context), extract ALL transactions into an array.
+2. If the input is vague, conversational, or has no recognizable financial data, set entries to [] and provide a helpful error message.
+
+Known senders/receivers for this user: ${knownReceivers}
+Available expense categories: ${expenseCategories.join(', ')}
+Available income categories: ${incomeCategories.join(', ')}
+Month names: ${monthNames.join(', ')}
+
+Return a JSON object with this exact structure:
+{
+  "entries": [
+    {
+      "month": <1-12 integer>,
+      "year": <4-digit integer>,
+      "type": "income" or "expense",
+      "receiver": "sender name (if income) or receiver/store name (if expense)",
+      "items": [{"name": "description", "amount": <number>}],
+      "subtotal": <number>,
+      "stateTax": <number, only for income, default 0>,
+      "federalTax": <number, only for income, default 0>,
+      "tax": <number — for income: stateTax+federalTax; for expense: sales/other tax; default 0>,
+      "category": "one of the available categories",
+      "notes": "optional context",
+      "total": <number — for income: subtotal - tax; for expense: subtotal + tax>
+    }
+  ],
+  "error": null
+}
+
+If the input cannot be parsed into structured entries, return:
+{
+  "entries": [],
+  "error": "Unstructured entries — <brief explanation of what was unclear and how to fix it>"
+}
+
+Rules:
+- Current year is 2025 if not specified
+- If month is named (e.g. "August"), convert to number (8)
+- For income entries: total = subtotal - tax; stateTax and federalTax should be extracted if mentioned
+- For expense entries: total = subtotal + tax
+- An entry MUST have at least a receiver/sender, an amount, and a month
+- If type is not specified but context implies income (salary, received, payment from person), set type = "income"
+- If type is not specified but context implies expense (bought, spent, paid at store), set type = "expense"
+- Assign the closest matching category from the lists provided
+- Return ONLY valid JSON, no markdown, no explanation text
+
+JSON:`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    let responseText = response.text().trim();
+
+    if (responseText.includes('```')) {
+      const jsonMatch = responseText.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
+      if (jsonMatch) responseText = jsonMatch[1];
+    }
+    if (!responseText.startsWith('{')) {
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) responseText = jsonMatch[0];
+    }
+
+    const parsed = JSON.parse(responseText);
+    if (parsed.error) return { entries: [], error: parsed.error };
+
+    const entries = (parsed.entries || []).map(e => {
+      const subtotal = Number(e.subtotal) || (Array.isArray(e.items) ? e.items.reduce((s, i) => s + (Number(i.amount) || 0), 0) : 0);
+      const isIncome = e.type === 'income';
+      const stateTax = Number(e.stateTax) || 0;
+      const federalTax = Number(e.federalTax) || 0;
+      const tax = isIncome ? stateTax + federalTax : (Number(e.tax) || 0);
+      const total = isIncome ? subtotal - tax : subtotal + tax;
+      const cat = (e.category || '').toLowerCase();
+      const validCat = allCategories.includes(cat) ? cat : (allCategories.includes('other') ? 'other' : allCategories[0]);
+      return {
+        month: Number(e.month) || new Date().getMonth() + 1,
+        year: Number(e.year) || new Date().getFullYear(),
+        type: isIncome ? 'income' : 'expense',
+        receiver: e.receiver || (isIncome ? 'Unknown Sender' : 'Unknown'),
+        items: Array.isArray(e.items) ? e.items.map(i => ({ name: String(i.name || ''), amount: Number(i.amount) || 0 })) : [{ name: 'Amount', amount: subtotal }],
+        subtotal,
+        stateTax,
+        federalTax,
+        tax,
+        category: validCat,
+        notes: e.notes || '',
+        total
+      };
+    });
+
+    return { entries, error: null };
+  } catch (error) {
+    console.error('Gemini batch parse error:', error);
+    throw new Error('Failed to parse batch entries. Please try again.');
   }
 };
 

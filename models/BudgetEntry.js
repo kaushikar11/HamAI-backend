@@ -49,15 +49,18 @@ const toJsDate = (value) => {
 };
 
 export const createEntry = async (entryData) => {
-  const { userId, store, receiver, items, subtotal, tax, total, category, notes, month, year } = entryData;
-  
+  const { userId, store, receiver, items, subtotal, tax, stateTax, federalTax, total, category, notes, month, year, type } = entryData;
+
   // Support both old 'store' and new 'receiver' field for backward compatibility
   const finalReceiver = receiver || store || 'Unknown';
-  
+
   // Ensure month and year are set
   const entryMonth = month || new Date().getMonth() + 1;
   const entryYear = year || new Date().getFullYear();
-  
+
+  // Transaction type: 'income' (inflow) or 'expense' (outflow). Defaults to expense.
+  const entryType = type === 'income' ? 'income' : 'expense';
+
   const entryDoc = {
     userId,
     store: finalReceiver, // Keep for backward compatibility
@@ -65,8 +68,11 @@ export const createEntry = async (entryData) => {
     items,
     subtotal,
     tax: tax || 0,
+    stateTax: stateTax || 0,
+    federalTax: federalTax || 0,
     total,
     category: category || 'other',
+    type: entryType,
     notes: notes || '',
     month: entryMonth,
     year: entryYear,
@@ -417,7 +423,8 @@ export const updateEntry = async (entryId, userId, updates) => {
   if (updates.subtotal !== undefined || updates.tax !== undefined) {
     const subtotal = updates.subtotal !== undefined ? updates.subtotal : entry.subtotal;
     const tax = updates.tax !== undefined ? updates.tax : entry.tax;
-    updateData.total = subtotal + tax;
+    const effectiveType = updates.type !== undefined ? updates.type : entry.type;
+    updateData.total = effectiveType === 'income' ? subtotal - tax : subtotal + tax;
   }
 
   // If month/year changed, we need to move the entry to the new location
