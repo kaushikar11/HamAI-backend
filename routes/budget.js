@@ -2,6 +2,7 @@ import express from 'express';
 import { body, validationResult } from 'express-validator';
 import verifyToken from '../middleware/auth.js';
 import * as BudgetEntry from '../models/BudgetEntry.js';
+import * as PlannedEntry from '../models/PlannedEntry.js';
 import * as User from '../models/User.js';
 import * as UserPreferences from '../models/UserPreferences.js';
 import { db } from '../firebase-admin.js';
@@ -433,12 +434,15 @@ router.post('/parse-batch', [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { text } = req.body;
+    const { text, month, year } = req.body;
     const prefs = await UserPreferences.getUserPreferences(req.userId);
     const userCategories = prefs.categories || [];
     const userReceivers = prefs.receiverNames || [];
 
-    const result = await parseBatchEntries(text, userCategories, userReceivers);
+    const defaultMonth = parseInt(month) || (new Date().getMonth() + 1);
+    const defaultYear = parseInt(year) || new Date().getFullYear();
+
+    const result = await parseBatchEntries(text, userCategories, userReceivers, defaultMonth, defaultYear);
     res.json(result);
   } catch (error) {
     console.error('Batch parse error:', error);
@@ -474,6 +478,115 @@ router.post('/enhance', [
     res.json({ category, notes });
   } catch (error) {
     res.status(500).json({ message: error.message || 'Failed to enhance entry' });
+  }
+});
+
+// "To be added" planned transactions — placeholders for a month that aren't
+// finished/decided yet, shown in the dashboard sidebar
+router.get('/planned', async (req, res) => {
+  try {
+    const month = req.query.month ? parseInt(req.query.month) : null;
+    const year = req.query.year ? parseInt(req.query.year) : null;
+
+    if (!month || !year) {
+      return res.status(400).json({ message: 'Month and year are required' });
+    }
+
+    const entries = await PlannedEntry.getPlannedEntriesByMonth(req.userId, month, year);
+    res.json({
+      entries: entries.map(entry => ({
+        ...entry,
+        createdAt: entry.createdAt?.toDate ? entry.createdAt.toDate().toISOString() : entry.createdAt,
+        updatedAt: entry.updatedAt?.toDate ? entry.updatedAt.toDate().toISOString() : entry.updatedAt
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+router.post('/planned', [
+  body('month').isInt({ min: 1, max: 12 }).withMessage('Valid month is required'),
+  body('year').isInt({ min: 2000 }).withMessage('Valid year is required'),
+  body('description').notEmpty().withMessage('Description is required')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { month, year, description, amount, type, category, notes } = req.body;
+    const entry = await PlannedEntry.createPlannedEntry({
+      userId: req.userId,
+      description: sanitizeInput(description),
+      amount,
+      type,
+      category: category ? sanitizeInput(category) : '',
+      notes: notes ? sanitizeInput(notes) : '',
+      month: parseInt(month),
+      year: parseInt(year)
+    });
+
+    res.status(201).json({
+      ...entry,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+router.put('/planned/:id', async (req, res) => {
+  try {
+    const month = req.body.month ? parseInt(req.body.month) : (req.query.month ? parseInt(req.query.month) : null);
+    const year = req.body.year ? parseInt(req.body.year) : (req.query.year ? parseInt(req.query.year) : null);
+
+    if (!month || !year) {
+      return res.status(400).json({ message: 'Month and year are required' });
+    }
+
+    const { description, amount, type, category, notes } = req.body;
+    const updates = {};
+    if (description !== undefined) updates.description = sanitizeInput(description);
+    if (amount !== undefined) updates.amount = amount;
+    if (type !== undefined) updates.type = type === 'income' ? 'income' : 'expense';
+    if (category !== undefined) updates.category = sanitizeInput(category);
+    if (notes !== undefined) updates.notes = sanitizeInput(notes);
+
+    const updated = await PlannedEntry.updatePlannedEntry(req.params.id, req.userId, month, year, updates);
+    if (!updated) {
+      return res.status(404).json({ message: 'Planned entry not found' });
+    }
+
+    res.json({
+      ...updated,
+      createdAt: updated.createdAt?.toDate ? updated.createdAt.toDate().toISOString() : updated.createdAt,
+      updatedAt: updated.updatedAt?.toDate ? updated.updatedAt.toDate().toISOString() : updated.updatedAt
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+router.delete('/planned/:id', async (req, res) => {
+  try {
+    const month = req.query.month ? parseInt(req.query.month) : null;
+    const year = req.query.year ? parseInt(req.query.year) : null;
+
+    if (!month || !year) {
+      return res.status(400).json({ message: 'Month and year are required' });
+    }
+
+    const deleted = await PlannedEntry.deletePlannedEntry(req.params.id, req.userId, month, year);
+    if (!deleted) {
+      return res.status(404).json({ message: 'Planned entry not found' });
+    }
+
+    res.json({ message: 'Planned entry deleted' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 

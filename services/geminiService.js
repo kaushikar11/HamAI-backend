@@ -383,7 +383,7 @@ Do NOT return JSON. Respond in plain text/markdown as Mr. Ham.
   }
 };
 
-export const parseBatchEntries = async (text, userCategories = null, userReceivers = []) => {
+export const parseBatchEntries = async (text, userCategories = null, userReceivers = [], defaultMonth = null, defaultYear = null) => {
   try {
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
@@ -393,6 +393,8 @@ export const parseBatchEntries = async (text, userCategories = null, userReceive
 
     const knownReceivers = [...new Set([...defaultIncomeSenders, ...userReceivers])].join(', ');
     const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const resolvedDefaultMonth = Number(defaultMonth) || (new Date().getMonth() + 1);
+    const resolvedDefaultYear = Number(defaultYear) || new Date().getFullYear();
 
     const prompt = `You are a financial data extraction assistant. The user wants to add multiple budget transactions in bulk.
 
@@ -436,7 +438,7 @@ If the input cannot be parsed into structured entries, return:
 }
 
 Rules:
-- Current year is 2025 if not specified
+- If an entry does not mention a month/year at all, default month to ${resolvedDefaultMonth} (${monthNames[resolvedDefaultMonth - 1]}) and year to ${resolvedDefaultYear}
 - If month is named (e.g. "August"), convert to number (8)
 - For income entries: total = subtotal - tax; stateTax and federalTax should be extracted if mentioned
 - For expense entries: total = subtotal + tax
@@ -474,8 +476,8 @@ JSON:`;
       const cat = (e.category || '').toLowerCase();
       const validCat = allCategories.includes(cat) ? cat : (allCategories.includes('other') ? 'other' : allCategories[0]);
       return {
-        month: Number(e.month) || new Date().getMonth() + 1,
-        year: Number(e.year) || new Date().getFullYear(),
+        month: Number(e.month) || resolvedDefaultMonth,
+        year: Number(e.year) || resolvedDefaultYear,
         type: isIncome ? 'income' : 'expense',
         receiver: e.receiver || (isIncome ? 'Unknown Sender' : 'Unknown'),
         items: Array.isArray(e.items) ? e.items.map(i => ({ name: String(i.name || ''), amount: Number(i.amount) || 0 })) : [{ name: 'Amount', amount: subtotal }],
